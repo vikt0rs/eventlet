@@ -4,6 +4,7 @@ from code import InteractiveConsole
 import errno
 import socket
 import sys
+import traceback
 
 import eventlet
 from eventlet import hubs
@@ -40,20 +41,35 @@ class FileProxy(object):
         return getattr(self.f, attr)
 
 
-# @@tavis: the `locals` args below mask the built-in function.  Should
-# be renamed.
+def format_addr(a):
+    if len(a) >= 2:
+        # IP
+        return '{0}:{1}'.format(*a)
+    if len(a) == 1:
+        # UNIX socket / named pipe
+        return str(a[0])
+    # unknown
+    return str(a)
+
+
 class SocketConsole(greenlets.greenlet):
-    def __init__(self, desc, hostport, locals):
+    def __init__(self, desc, hostport, init_locals):
         self.hostport = hostport
-        self.locals = locals
+        self.init_locals = init_locals
         # mangle the socket
         self.desc = FileProxy(desc)
         greenlets.greenlet.__init__(self)
+        # place to store exception if InteractiveConsole terminates
+        self.exc_info = None
 
     def run(self):
         try:
-            console = InteractiveConsole(self.locals)
+            console = InteractiveConsole(self.init_locals)
             console.interact()
+        except SystemExit:
+            pass
+        except BaseException:
+            self.exc_info = sys.exc_info()
         finally:
             self.switch_out()
             self.finalize()
@@ -69,24 +85,27 @@ class SocketConsole(greenlets.greenlet):
     def finalize(self):
         # restore the state of the socket
         self.desc = None
-        print("backdoor closed to %s:%s" % self.hostport)
+        print("backdoor closed to {0}".format(format_addr(self.hostport)))
+
+        if self.exc_info is not None:
+            traceback.print_exception(*self.exc_info)
 
 
-def backdoor_server(sock, locals=None):
+def backdoor_server(sock, init_locals=None):
     """ Blocking function that runs a backdoor server on the socket *sock*,
     accepting connections and running backdoor consoles for each client that
     connects.
 
-    The *locals* argument is a dictionary that will be included in the locals()
+    The *init_locals* argument is a dictionary that will be included in the locals()
     of the interpreters.  It can be convenient to stick important application
     variables in here.
     """
-    print("backdoor server listening on %s:%s" % sock.getsockname())
+    print("backdoor server listening on {0}".format(format_addr(sock.getsockname())))
     try:
         try:
             while True:
                 socketpair = sock.accept()
-                backdoor(socketpair, locals)
+                backdoor(socketpair, init_locals)
         except socket.error as e:
             # Broken pipe means it was shutdown
             if get_errno(e) != errno.EPIPE:
@@ -95,17 +114,16 @@ def backdoor_server(sock, locals=None):
         sock.close()
 
 
-def backdoor(conn_info, locals=None):
+def backdoor(conn_info, init_locals=None):
     """Sets up an interactive console on a socket with a single connected
     client.  This does not block the caller, as it spawns a new greenlet to
     handle the console.  This is meant to be called from within an accept loop
     (such as backdoor_server).
     """
     conn, addr = conn_info
-    host, port = addr
-    print("backdoor to %s:%s" % (host, port))
+    print("backdoor to {0}".format(format_addr(addr)))
     fl = conn.makefile("rw")
-    console = SocketConsole(fl, (host, port), locals)
+    console = SocketConsole(fl, addr, init_locals)
     hub = hubs.get_hub()
     hub.schedule_call_global(0, console.switch)
 
