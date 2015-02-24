@@ -12,6 +12,7 @@ try:
     import dns.rdtypes.IN.A
     import dns.rdtypes.IN.AAAA
     import dns.resolver
+    import dns.reverse_name
     import dns.rrset
     from eventlet.support import greendns
     greendns_available = True
@@ -789,3 +790,9 @@ class TestGethostbyname_ex(LimitedTestCase):
         greendns.getaliases.aliases = []
         res = greendns.gethostbyname_ex('host.example.com')
         assert res == ('host.example.com', [], ['1.2.3.4', '1.2.3.5'])
+
+
+@skip_unless(greendns_requirement)
+def test_reverse_name():
+    # eventlet.monkey_patch(all=True)
+    reversename.from_address("127.0.0.1")
